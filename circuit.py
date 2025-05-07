@@ -40,7 +40,12 @@ class AbstractNode:
         self.clear_cache()
         self._size()
         return self.cache
-        
+
+    def map(self):
+        self.clear_cache()
+        self._map()
+        return self.cache[1]
+    
     def _copy(self):
         raise NotImplementedError(f"Copy not implemented for {self.node_type} nodes!")
 
@@ -55,6 +60,9 @@ class AbstractNode:
         
     def _size(self):
         raise NotImplementedError(f"Size not implemented for {self.node_type} nodes!")
+        
+    def _map(self):
+        raise NotImplementedError(f"MAP not implemented for {self.node_type} nodes!")
 
 class SumNode(AbstractNode):
     def __init__(self, scope: Set[int], params: List[float], children: List[AbstractNode]):
@@ -116,6 +124,20 @@ class SumNode(AbstractNode):
 
             edge_count += c.cache
         self.cache = edge_count
+        
+    def _map(self):
+        max_prob = 0
+        max_assignment = None
+        for i, c in enumerate(self.children):
+            if c.cache is None:
+                c._map()
+                
+            # Greater than max
+            if c.cache[0] * self.params[i] > max_prob:
+                max_prob = c.cache[0] * self.params[i]
+                max_assignment = c.cache[1]
+                
+        self.cache = (max_prob, max_assignment)
         
 
 class ProductNode(AbstractNode):
@@ -184,6 +206,19 @@ class ProductNode(AbstractNode):
 
             edge_count += c.cache
         self.cache = edge_count
+        
+    def _map(self):
+        max_prob = 1
+        max_assignment = {}
+        for i, c in enumerate(self.children):
+            if c.cache is None:
+                c._map()
+                
+            max_prob *= c.cache[0]
+            for k in c.cache[1].keys():
+                max_assignment[k] = c.cache[1][k]
+                
+        self.cache = (max_prob, max_assignment)
 
 class CategoricalInputNode(AbstractNode):
     def __init__(self, scope: Set[int], params: List[float]):
@@ -216,6 +251,12 @@ class CategoricalInputNode(AbstractNode):
 
     def _size(self):
         self.cache = 0
+        
+    def _map(self):
+        max_prob = max(self.params)
+        max_assignment = {next(iter(self.scope)): self.params.index(max_prob)}
+                
+        self.cache = (max_prob, max_assignment)
 
 from typing import Dict, List
 
