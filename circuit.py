@@ -362,66 +362,84 @@ def update_leaf_weights(pc: AbstractNode, weights_to_change: Dict[int, List[floa
         for c in pc.children:
             update_leaf_weights(c, weights_to_change)
 
-import numpy as np
-import scipy.optimize
+import scipy, numpy as np, gurobipy
+from gurobipy import GRB
 
-def cw_dist(pc1, pc2, memo=None):
-    if memo is None:
-        memo = {}
-    if (pc1, pc2) in memo.keys():
-        return memo[(pc1, pc2)]
+
+def solve_transportation_problem(costs, supply, demand):
+    # Create model
+    model = gurobipy.Model("Transportation")
+    model.setParam('OutputFlag', 0)
+    
+    # Decision variables: x[i,j] = quantity shipped from source i to destination j
+    x = {}
+    for i in range(len(supply)):
+        for j in range(len(demand)):
+            x[i,j] = model.addVar(vtype=GRB.CONTINUOUS, name=f"x[{i},{j}]", lb=0)
+    
+    # Objective: Minimize total transportation cost
+    model.setObjective(
+        sum(costs[i][j] * x[i,j] for i in range(len(supply)) for j in range(len(demand))),
+        GRB.MINIMIZE
+    )
+    
+    # Supply constraints: Outflow from each source <= supply
+    for i in range(len(supply)):
+        model.addConstr(
+            sum(x[i,j] for j in range(len(demand))) <= supply[i],
+            name=f"Supply_{i}"
+        )
+    
+    # Demand constraints: Inflow to each destination >= demand
+    for j in range(len(demand)):
+        model.addConstr(
+            sum(x[i,j] for i in range(len(supply))) >= demand[j],
+            name=f"Demand_{j}"
+        )
+    
+    # Optimize
+    model.optimize()
+
+    return model.objVal
+
+def cw_dist(pc1, pc2):
 
     # If pc1 and pc2 are sums
     if pc1.node_type == pc2.node_type and pc1.node_type == 'sum':
         # Trivially, if both sum nodes have 1 child:
         if len(pc1.children) == len(pc2.children) and len(pc1.children) == 1:
-            memo[(pc1, pc2)] = cw_dist(pc1.children[0], pc2.children[0], memo=memo)
-            return memo[(pc1, pc2)]
+            return cw_dist(pc1.children[0], pc2.children[0])
         if len(pc2.children) == 1:
             cw_val = 0
             for i, c1 in enumerate(pc1.children):
-                cw_val += pc1.params[i] * cw_dist(c1, pc2.children[0], memo=memo)
+                cw_val += pc1.params[i] * cw_dist(c1, pc2.children[0])
             
-            memo[(pc1, pc2)] = cw_val
-            return memo[(pc1, pc2)]
+            return cw_val
         if len(pc1.children) == 1:
             cw_val = 0
             for j, c2 in enumerate(pc2.children):
-                cw_val += pc2.params[j] * cw_dist(pc1.children[0], c2, memo=memo)
+                cw_val += pc2.params[j] * cw_dist(pc1.children[0], c2)
             
-            memo[(pc1, pc2)] = cw_val
-            return memo[(pc1, pc2)]
+            return cw_val
             
         # Build out the LOP to solve
         A = np.zeros((len(pc1.children) + len(pc2.children), len(pc1.children) * len(pc2.children)))
         b = np.zeros(len(pc1.children) + len(pc2.children))
         c = np.zeros(len(pc1.children) * len(pc2.children))
 
-        # Objective function
+        # Transport costs
+        costs = []
         for i, c1 in enumerate(pc1.children):
+            r = []
             for j, c2 in enumerate(pc2.children):
-                c[i * len(pc2.children) + j] = cw_dist(c1, c2, memo=memo)
+                r.append(cw_dist(c1, c2))
+            costs.append(r)
+        supply = pc1.params
+        demand = pc2.params
 
-        # Build out the constraints
-        c_idx = 0
-        for i, c1 in enumerate(pc1.children):
-            b[c_idx] = pc1.params[i]
-            for j, c2 in enumerate(pc2.children):
-                A[c_idx, i * len(pc2.children) + j] = 1
-            c_idx += 1
+        result = solve_transportation_problem(costs, supply, demand)
 
-        # Build out the constraints
-        for j, c2 in enumerate(pc2.children):
-            b[c_idx] = pc2.params[j]
-            for i, c1 in enumerate(pc1.children):
-                A[c_idx, i * len(pc2.children) + j] = 1
-            c_idx += 1
-
-        # We have the solution
-        result = scipy.optimize.linprog(c, A_eq=A, b_eq=b)
-
-        memo[(pc1, pc2)] = result.fun
-        return memo[(pc1, pc2)]
+        return result
 
     # If pc1 and pc2 are products
     if pc1.node_type == pc2.node_type and pc1.node_type == 'product':
@@ -430,32 +448,28 @@ def cw_dist(pc1, pc2, memo=None):
             for j, c2 in enumerate(pc2.children):
                 if c1.scope != c2.scope:
                     continue
-                cw_val += cw_dist(c1, c2, memo=memo)
+                cw_val += cw_dist(c1, c2)
         
-        memo[(pc1, pc2)] = cw_val
-        return memo[(pc1, pc2)]
+        return cw_val
 
     # If pc1 and pc2 are inputs
     if pc1.node_type == pc2.node_type and pc1.node_type == 'input':
-        memo[(pc1, pc2)] = abs(pc1.params[0] - pc2.params[0])
-        return memo[(pc1, pc2)]
+        return abs(pc1.params[0] - pc2.params[0])
 
     # Here, we know that either pc1 or pc2 is a sum node, while the other is either a product or input node.
     if pc1.node_type == 'sum':
         cw_val = 0
         for i, c1 in enumerate(pc1.children):
-            cw_val += pc1.params[i] * cw_dist(c1, pc2, memo=memo)
+            cw_val += pc1.params[i] * cw_dist(c1, pc2)
         
-        memo[(pc1, pc2)] = cw_val
-        return memo[(pc1, pc2)]
+        return cw_val
         
     if pc2.node_type == 'sum':
         cw_val = 0
         for j, c2 in enumerate(pc2.children):
-            cw_val += pc2.params[j] * cw_dist(pc1, c2, memo=memo)
+            cw_val += pc2.params[j] * cw_dist(pc1, c2)
         
-        memo[(pc1, pc2)] = cw_val
-        return memo[(pc1, pc2)]
+        return cw_val
 
 # Determines whether a given precondition can possibly hold for a state distribution
 def precondition_holds(pc, precondition, predicates_to_vars):
