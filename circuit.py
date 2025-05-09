@@ -362,14 +362,14 @@ def update_leaf_weights(pc: AbstractNode, weights_to_change: Dict[int, List[floa
         for c in pc.children:
             update_leaf_weights(c, weights_to_change)
 
-import scipy, numpy as np, gurobipy
+import numpy as np, gurobipy
 from gurobipy import GRB
 
-
-def solve_transportation_problem(costs, supply, demand):
+def solve_transportation_problem_new(costs, supply, demand, model):
     # Create model
-    model = gurobipy.Model("Transportation")
-    model.setParam('OutputFlag', 0)
+    model.remove(model.getConstrs())  # Remove all constraints
+    model.remove(model.getVars())    # Remove all variables
+    model.reset()                    # Reset model state
     
     # Decision variables: x[i,j] = quantity shipped from source i to destination j
     x = {}
@@ -400,44 +400,43 @@ def solve_transportation_problem(costs, supply, demand):
     # Optimize
     model.optimize()
 
-    return model.objVal
+    v = model.objVal
+    return v
 
-def cw_dist(pc1, pc2):
+def cw_dist(pc1, pc2, model=None):
+    if model is None:
+        model = gurobipy.Model("Transportation")
+        model.setParam('OutputFlag', 0)
 
     # If pc1 and pc2 are sums
     if pc1.node_type == pc2.node_type and pc1.node_type == 'sum':
         # Trivially, if both sum nodes have 1 child:
         if len(pc1.children) == len(pc2.children) and len(pc1.children) == 1:
-            return cw_dist(pc1.children[0], pc2.children[0])
+            return cw_dist(pc1.children[0], pc2.children[0], model=model)
         if len(pc2.children) == 1:
             cw_val = 0
             for i, c1 in enumerate(pc1.children):
-                cw_val += pc1.params[i] * cw_dist(c1, pc2.children[0])
+                cw_val += pc1.params[i] * cw_dist(c1, pc2.children[0], model=model)
             
             return cw_val
         if len(pc1.children) == 1:
             cw_val = 0
             for j, c2 in enumerate(pc2.children):
-                cw_val += pc2.params[j] * cw_dist(pc1.children[0], c2)
+                cw_val += pc2.params[j] * cw_dist(pc1.children[0], c2, model=model)
             
             return cw_val
-            
-        # Build out the LOP to solve
-        A = np.zeros((len(pc1.children) + len(pc2.children), len(pc1.children) * len(pc2.children)))
-        b = np.zeros(len(pc1.children) + len(pc2.children))
-        c = np.zeros(len(pc1.children) * len(pc2.children))
 
         # Transport costs
         costs = []
         for i, c1 in enumerate(pc1.children):
             r = []
             for j, c2 in enumerate(pc2.children):
-                r.append(cw_dist(c1, c2))
+                r.append(cw_dist(c1, c2, model=model))
             costs.append(r)
         supply = pc1.params
         demand = pc2.params
 
-        result = solve_transportation_problem(costs, supply, demand)
+        result = solve_transportation_problem_new(costs, supply, demand, model=model)
 
         return result
 
@@ -448,7 +447,7 @@ def cw_dist(pc1, pc2):
             for j, c2 in enumerate(pc2.children):
                 if c1.scope != c2.scope:
                     continue
-                cw_val += cw_dist(c1, c2)
+                cw_val += cw_dist(c1, c2, model=model)
         
         return cw_val
 
@@ -460,14 +459,14 @@ def cw_dist(pc1, pc2):
     if pc1.node_type == 'sum':
         cw_val = 0
         for i, c1 in enumerate(pc1.children):
-            cw_val += pc1.params[i] * cw_dist(c1, pc2)
+            cw_val += pc1.params[i] * cw_dist(c1, pc2, model=model)
         
         return cw_val
         
     if pc2.node_type == 'sum':
         cw_val = 0
         for j, c2 in enumerate(pc2.children):
-            cw_val += pc2.params[j] * cw_dist(pc1, c2)
+            cw_val += pc2.params[j] * cw_dist(pc1, c2, model=model)
         
         return cw_val
 
