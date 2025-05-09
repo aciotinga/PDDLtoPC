@@ -10,58 +10,23 @@ class AbstractNode:
         self.node_type = node_type
         self.scope = scope
         self.children = children
-
-        self.cache = None
-
-    def clear_cache(self):
-        self.cache = None
-        for c in self.children:
-            c.clear_cache()
-
-    def forward(self, data: List[float]) -> float:
-        self.clear_cache()
-        self._forward(data)
-        return self.cache
-
-    def normalize(self):
-        self.clear_cache()
-        self._normalize()
-
-    def marginalize(self, vars: Set[int]):
-        self.clear_cache()
-        self._marginalize(vars)
-        
-    def copy(self):
-        self.clear_cache()
-        self._copy()
-        return self.cache
-        
-    def size(self):
-        self.clear_cache()
-        self._size()
-        return self.cache
-
-    def map(self):
-        self.clear_cache()
-        self._map()
-        return self.cache[1]
     
-    def _copy(self):
+    def copy(self):
         raise NotImplementedError(f"Copy not implemented for {self.node_type} nodes!")
 
-    def _forward(self, data: List[float]):
+    def forward(self, data: List[float]):
         raise NotImplementedError(f"Forward not implemented for {self.node_type} nodes!")
 
-    def _marginalize(self, vars: Set[int]):
+    def marginalize(self, vars: Set[int]):
         raise NotImplementedError(f"Marginalize not implemented for {self.node_type} nodes!")
 
-    def _normalize(self):
+    def normalize(self):
         raise NotImplementedError(f"Normalize not implemented for {self.node_type} nodes!")
         
-    def _size(self):
+    def size(self):
         raise NotImplementedError(f"Size not implemented for {self.node_type} nodes!")
         
-    def _map(self):
+    def map(self):
         raise NotImplementedError(f"MAP not implemented for {self.node_type} nodes!")
 
 class SumNode(AbstractNode):
@@ -70,155 +35,71 @@ class SumNode(AbstractNode):
 
         self.params = params
 
-    def _forward(self, data: List[float]):
-        if self.cache is not None:
-            return
-        
+    def forward(self, data: List[float]):
         total = 0
         for i in range(len(self.params)):
-            self.children[i].forward(data)
-            total += self.params[i] * self.children[i].cache
-        self.cache = total
-
-    def _marginalize(self, vars: Set[int]):
-        if self.cache is not None:
-            return
-
-        # Check if the current node's scope is a subset of vars; if it is, then this node gets marginalized
-        if self.scope.issubset(vars):
-            self.cache = True
-
-            # Delete all the children, since they are marginalized
-            for c in self.children:
-                del c
-
-            return
-        else:
-            # Remove marginalized variables from scope
-            # Note that we assume smoothness, decomposability, and normalized parameters
-            for v in vars:
-                if v in self.scope:
-                    self.scope.remove(v)
-            self.cache = False
-
-        # Marginalize the children
-        for c in self.children:
-            c._marginalize(vars)
+            total += self.params[i] * self.children[i].forward(data)
+        return total
         
-    def _copy(self):
-        if self.cache is not None:
-            return
-            
+    def copy(self):
+        copies = []
         for c in self.children:
-            c._copy()
-        self.cache = SumNode(self.scope.copy(), self.params.copy(), [c.cache for c in self.children])
+            copies.append(c.copy())
+        return SumNode(self.scope.copy(), self.params.copy(), copies)
         
-    def _size(self):
+    def size(self):
         edge_count = 0
         for c in self.children:
-            edge_count += 1
-
-            if c.cache is not None:
-                continue
-            c._size()
-
-            edge_count += c.cache
-        self.cache = edge_count
+            edge_count += c.size() + 1
+        return edge_count
         
-    def _map(self):
+    def map(self):
         max_prob = 0
         max_assignment = None
         for i, c in enumerate(self.children):
-            if c.cache is None:
-                c._map()
+            p, a = c.map()
                 
             # Greater than max
-            if c.cache[0] * self.params[i] > max_prob:
-                max_prob = c.cache[0] * self.params[i]
-                max_assignment = c.cache[1]
+            if p * self.params[i] > max_prob:
+                max_prob = p * self.params[i]
+                max_assignment = a
                 
-        self.cache = (max_prob, max_assignment)
+        return (max_prob, max_assignment)
         
 
 class ProductNode(AbstractNode):
     def __init__(self, scope: Set[int], children: List[AbstractNode]):
         super().__init__("product", scope, children)
 
-    def _forward(self, data: List[float]):
-        if self.cache is not None:
-            return
-            
+    def forward(self, data: List[float]):
         total = 1
         for i in range(len(self.children)):
-            self.children[i].forward(data)
-            total *= self.children[i].cache
-        self.cache = total
-
-    def _marginalize(self, vars: Set[int]):
-        if self.cache is not None:
-            return
-
-        # Check if the current node's scope is a subset of vars; if it is, then this node gets marginalized
-        if self.scope.issubset(vars):
-            self.cache = True
-
-            # Delete all the children, since they are marginalized
-            for c in self.children:
-                del c
-
-            return
-        else:
-            # Remove marginalized variables from scope
-            # Note that we assume smoothness, decomposability, and normalized parameters
-            for v in vars:
-                if v in self.scope:
-                    self.scope.remove(v)
-            self.cache = False
-
-        # Marginalize the children
-        to_remove = []
-        for i, c in enumerate(self.children):
-            c._marginalize(vars)
-
-            if c.cache: # All variables have been marginalized in this child
-                to_remove.append(i)
-
-        # Remove all marginalized children from the child list
-        for i in reversed(to_remove):
-            del self.children[i]
+            total *= self.children[i].forward(data)
+        return total
         
-    def _copy(self):
-        if self.cache is not None:
-            return
-            
+    def copy(self):
+        copies = []
         for c in self.children:
-            c._copy()
-        self.cache = ProductNode(self.scope.copy(), [c.cache for c in self.children])
+            copies.append(c.copy())
+        return ProductNode(self.scope.copy(), copies)
         
-    def _size(self):
+    def size(self):
         edge_count = 0
         for c in self.children:
-            edge_count += 1
-
-            if c.cache is not None:
-                continue
-            c._size()
-
-            edge_count += c.cache
-        self.cache = edge_count
+            edge_count += 1 + c.size()
+        return edge_count
         
-    def _map(self):
+    def map(self):
         max_prob = 1
         max_assignment = {}
         for i, c in enumerate(self.children):
-            if c.cache is None:
-                c._map()
+            p, a = c.map()
                 
-            max_prob *= c.cache[0]
-            for k in c.cache[1].keys():
-                max_assignment[k] = c.cache[1][k]
+            max_prob *= p
+            for k in a.keys():
+                max_assignment[k] = a[k]
                 
-        self.cache = (max_prob, max_assignment)
+        return (max_prob, max_assignment)
 
 class CategoricalInputNode(AbstractNode):
     def __init__(self, scope: Set[int], params: List[float]):
@@ -226,37 +107,23 @@ class CategoricalInputNode(AbstractNode):
 
         self.params = params
 
-    def _forward(self, data: List[int]):
-        if self.cache is not None:
-            return
-        
+    def forward(self, data: List[int]):
         data_val = next(iter(self.scope))
 
         # If not in the data, we marginalize this node in the forward pass
-        self.cache = self.params[data[data_val]] if data_val in data.keys() else 1
-
-    def _marginalize(self, vars: Set[int]):
-        if self.cache is not None:
-            return
-
-        # Check if the current node's scope is a subset of vars; if it is, then this node gets marginalized
-        if self.scope.issubset(vars):
-            self.cache = True
+        return self.params[data[data_val]] if data_val in data.keys() else 1
         
-    def _copy(self):
-        if self.cache is not None:
-            return
-            
-        self.cache = CategoricalInputNode(self.scope.copy(), self.params.copy())
+    def copy(self):
+        return CategoricalInputNode(self.scope.copy(), self.params.copy())
 
-    def _size(self):
-        self.cache = 0
+    def size(self):
+        return 0
         
-    def _map(self):
+    def map(self):
         max_prob = max(self.params)
         max_assignment = {next(iter(self.scope)): self.params.index(max_prob)}
                 
-        self.cache = (max_prob, max_assignment)
+        return (max_prob, max_assignment)
 
 from typing import Dict, List
 
@@ -322,7 +189,6 @@ def update_pc_with_action(pc: AbstractNode, precondition, effect, preds_to_vars:
         # For each variable to update, assign its parameters in the new pc
         new_subcircuit = pc.copy()
         update_leaf_weights(new_subcircuit, variables_to_update)
-        new_subcircuit.clear_cache()
         
         subcircuits.append(new_subcircuit)
 
@@ -351,9 +217,6 @@ def update_pc_with_action(pc: AbstractNode, precondition, effect, preds_to_vars:
     return state_distribution
 
 def update_leaf_weights(pc: AbstractNode, weights_to_change: Dict[int, List[float]]):
-    if pc.cache is not None:
-        return
-    pc.cache = True
     if pc.node_type == "input":
         var = next(iter(pc.scope))
         if var in weights_to_change.keys():
@@ -469,6 +332,48 @@ def cw_dist(pc1, pc2, model=None):
             cw_val += pc2.params[j] * cw_dist(pc1, c2, model=model)
         
         return cw_val
+
+def approximate_tv(pc1, pc2, assignments={}):
+    best_mar_dist = 0
+    best_mar_var = None
+    # We first look at each candidate variable we can add and evaluate what the tv distance does
+    for var in pc1.scope:
+        if var in assignments.keys():
+            continue
+
+        # First, try var=0 and then var=1
+        new_assignment = assignments.copy()
+        
+        new_assignment[var] = 0
+
+        p_x = pc1.forward(new_assignment)
+        p_y = pc2.forward(new_assignment)
+
+        if abs(p_x-p_y) >= best_mar_dist:
+            best_mar_dist = abs(p_x-p_y)
+            best_mar_var = (var, 0)
+            
+        new_assignment[var] = 1
+
+        p_x = pc1.forward(new_assignment)
+        p_y = pc2.forward(new_assignment)
+
+        if abs(p_x-p_y) >= best_mar_dist:
+            best_mar_dist = abs(p_x-p_y)
+            best_mar_var = (var, 1)
+    
+    if best_mar_var is None:
+        return None
+
+    # Create a new assignment to build off
+    assignments[best_mar_var[0]] = best_mar_var[1]
+    
+    sub_result = approximate_tv(pc1, pc2, assignments=assignments.copy())
+    
+    if sub_result is None:
+        return best_mar_dist, assignments
+    else:
+        return sub_result[0], sub_result[1]
 
 # Determines whether a given precondition can possibly hold for a state distribution
 def precondition_holds(pc, precondition, predicates_to_vars):
